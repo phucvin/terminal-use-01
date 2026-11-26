@@ -6,13 +6,14 @@
 
 ## Features
 
-- **Single static binary**: Runs as both an **MCP stdio server** (`terminal-use mcp`) and a **CLI** (`terminal-use start|send|capture|wait|resize|list|close|watch|logs`).
+- **Single static binary**: Runs as both an **MCP stdio server** (`terminal-use mcp`) and a **CLI** (`terminal-use start|send|capture|wait|resize|tab|list|close|watch|logs`).
 - **Default `tmux` server with `tu-*` isolation**: Managed sessions live on your default `tmux` server with a strict `tu-` prefix, so plain `tmux attach -r -t tu-<name>` works out of the box while unrelated personal `tmux` sessions are never listed or killed. (Set `TERMINAL_USE_SOCKET=<name>` if you ever want a separate socket.)
 - **Computer-Use-style action loop**:
   - `terminal_start` — Spawn a persistent `120x40` PTY session with `remain-on-exit`, `window-size manual` (so attaching from a smaller terminal won't reflow TUI layouts), and a helpful status bar (`Detach: Ctrl-b d`).
-  - `terminal_send_keys` — Cleanly separates literal `text` (`send-keys -l` or `load-buffer`/`paste-buffer` for multiline text) from validated tmux special `keys` (`Enter`, `C-c`, `Escape`, `Tab`, arrows, `F1`-`F12`), waits for quiescence or `expect_regex`, and returns the updated screen automatically.
-  - `terminal_capture` — Capture visible viewport or scrollback (`-S -N`), cursor coordinates `(x, y)`, active command, alive/exit code, and attach commands.
+  - `terminal_send_keys` — Cleanly separates literal `text` (`send-keys -l` or `load-buffer`/`paste-buffer` for multiline text) from validated tmux special `keys` (`Enter`, `C-c`, `Escape`, `Tab`, arrows, `F1`-`F12`), waits for quiescence or `expect_regex`, and returns the updated screen automatically. Accepts an optional `tab` parameter to target a specific tab.
+  - `terminal_capture` — Capture visible viewport or scrollback (`-S -N`), cursor coordinates `(x, y)`, active process, tab metadata, alive/exit code, and attach commands.
   - `terminal_wait` — Wait for screen quiescence or a Go regex match.
+  - `terminal_new_tab`, `terminal_switch_tab`, `terminal_close_tab`, `terminal_list_tabs` — Create named or background tabs (tmux windows) inside a session, switch tabs by index/name/`next`/`prev`/`last`, list tabs, and close tabs cleanly.
   - `terminal_resize`, `terminal_list`, `terminal_close` — Full lifecycle control.
 - **Live human monitoring & takeover**:
   - Read-only watch: `./bin/terminal-use watch [session]` (or `tmux attach -r -t tu-<name>`)
@@ -49,7 +50,14 @@ The binary is built at `./bin/terminal-use`.
 ./bin/terminal-use send demo --text 'echo "hello from terminal-use"' --enter
 ./bin/terminal-use send demo --text 'node -e "console.log(6 * 7)"' --enter --expect '42'
 
-# 4. List & clean up
+# 4. Manage multiple tabs (tmux windows) inside the same session
+./bin/terminal-use tab new demo --name logs
+./bin/terminal-use send demo --text 'echo "hello from logs tab"' --enter
+./bin/terminal-use tab list demo
+./bin/terminal-use tab switch demo 0
+./bin/terminal-use tab close demo logs
+
+# 5. List & clean up
 ./bin/terminal-use list
 ./bin/terminal-use close demo
 ```

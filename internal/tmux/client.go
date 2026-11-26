@@ -17,6 +17,8 @@ var (
 	ErrSessionNotFound = errors.New("tmux session not found")
 	ErrInvalidSession  = errors.New("invalid tmux session name")
 	ErrPaneDead        = errors.New("tmux pane has exited")
+	ErrTabNotFound     = errors.New("tmux tab not found")
+	ErrInvalidTab      = errors.New("invalid tmux tab")
 )
 
 // EventRecorder records structured actions and optional raw pane output paths.
@@ -125,6 +127,36 @@ func EnsureManagedSession(session string) (string, error) {
 		return "", fmt.Errorf("%w: session %q must start with %q", ErrInvalidSession, session, SessionPrefix)
 	}
 	return NormalizeSessionName(name)
+}
+
+// ValidateTabName checks that a tab (tmux window) name is safe and contains no target-syntax characters.
+func ValidateTabName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", fmt.Errorf("%w: tab name cannot be empty", ErrInvalidTab)
+	}
+	if !validSessionCharsRe.MatchString(name) {
+		return "", fmt.Errorf("%w: %q must match [a-zA-Z0-9_-]+ (no spaces, ':', or '.')", ErrInvalidTab, name)
+	}
+	if len(name) > 64 {
+		return "", fmt.Errorf("%w: %q exceeds 64 characters", ErrInvalidTab, name)
+	}
+	return name, nil
+}
+
+// ValidateTabSelector checks that a tab selector (index, name, or navigation keyword) is safe.
+func ValidateTabSelector(raw string) (string, error) {
+	sel := strings.TrimSpace(raw)
+	if sel == "" {
+		return "", fmt.Errorf("%w: tab selector cannot be empty", ErrInvalidTab)
+	}
+	if !validSessionCharsRe.MatchString(sel) {
+		return "", fmt.Errorf("%w: %q must be a tab index or name matching [a-zA-Z0-9_-]+", ErrInvalidTab, sel)
+	}
+	if len(sel) > 64 {
+		return "", fmt.Errorf("%w: %q exceeds 64 characters", ErrInvalidTab, sel)
+	}
+	return sel, nil
 }
 
 func isNoSessionErr(stderr string) bool {

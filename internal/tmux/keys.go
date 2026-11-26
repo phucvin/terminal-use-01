@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -81,16 +82,17 @@ func (c *Client) SendKeys(ctx context.Context, opts SendKeysOptions) (*PaneCaptu
 		keys = append(keys, "Enter")
 	}
 
-	// Verify session exists and pane is still alive.
-	pre, err := c.Capture(ctx, CaptureOptions{Session: session})
+	// Verify session/tab exists and pane is still alive.
+	pre, err := c.Capture(ctx, CaptureOptions{Session: session, Tab: opts.Tab})
 	if err != nil {
 		return nil, err
 	}
 	if !pre.Alive {
-		return pre, fmt.Errorf("%w: session %q has already exited (capture it to inspect final output, or close it)", ErrPaneDead, session)
+		return pre, fmt.Errorf("%w: session %q tab %d has already exited (capture it to inspect final output, or close it)", ErrPaneDead, session, pre.TabIndex)
 	}
 
-	target := "=" + session + ":"
+	target := fmt.Sprintf("=%s:%d", session, pre.TabIndex)
+	tabSel := strconv.Itoa(pre.TabIndex)
 
 	// Send literal text safely.
 	if opts.Text != "" {
@@ -113,6 +115,7 @@ func (c *Client) SendKeys(ctx context.Context, opts SendKeysOptions) (*PaneCaptu
 	}
 
 	c.record(session, "send_keys", map[string]any{
+		"tab_index":    pre.TabIndex,
 		"text":         opts.Text,
 		"keys":         keys,
 		"expect_regex": opts.ExpectRegex,
@@ -129,6 +132,7 @@ func (c *Client) SendKeys(ctx context.Context, opts SendKeysOptions) (*PaneCaptu
 		}
 		return c.Capture(ctx, CaptureOptions{
 			Session:     session,
+			Tab:         tabSel,
 			Scrollback:  opts.Scrollback,
 			IncludeANSI: opts.IncludeANSI,
 		})
@@ -136,6 +140,7 @@ func (c *Client) SendKeys(ctx context.Context, opts SendKeysOptions) (*PaneCaptu
 
 	return c.Wait(ctx, WaitOptions{
 		Session:     session,
+		Tab:         tabSel,
 		ExpectRegex: opts.ExpectRegex,
 		SettleMs:    opts.SettleMs,
 		TimeoutMs:   opts.TimeoutMs,

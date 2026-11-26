@@ -27,9 +27,45 @@ type StartOptions struct {
 	TimeoutMs int               `json:"timeout_ms,omitempty"`
 }
 
+// NewTabOptions configures creating a new tab (tmux window) inside a managed session.
+type NewTabOptions struct {
+	Session    string            `json:"session"`
+	Name       string            `json:"name,omitempty"`
+	Cwd        string            `json:"cwd,omitempty"`
+	Command    string            `json:"command,omitempty"`
+	Cols       int               `json:"cols,omitempty"`
+	Rows       int               `json:"rows,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Background bool              `json:"background,omitempty"`
+	SettleMs   int               `json:"settle_ms,omitempty"`
+	TimeoutMs  int               `json:"timeout_ms,omitempty"`
+}
+
+// TabInfo describes a single tab (tmux window) inside a managed session.
+type TabInfo struct {
+	Index          int    `json:"index"`
+	Name           string `json:"name"`
+	Active         bool   `json:"active"`
+	Cols           int    `json:"cols"`
+	Rows           int    `json:"rows"`
+	CurrentCommand string `json:"current_command"`
+	CurrentPath    string `json:"current_path,omitempty"`
+	Alive          bool   `json:"alive"`
+	ExitCode       *int   `json:"exit_code,omitempty"`
+}
+
+// CloseTabResult describes the outcome of closing a tab inside a managed session.
+type CloseTabResult struct {
+	Session       string       `json:"session"`
+	ClosedTab     TabInfo      `json:"closed_tab"`
+	SessionClosed bool         `json:"session_closed"`
+	Capture       *PaneCapture `json:"capture,omitempty"`
+}
+
 // SendKeysOptions configures sending text and/or special keys to a session.
 type SendKeysOptions struct {
 	Session     string   `json:"session"`
+	Tab         string   `json:"tab,omitempty"`
 	Text        string   `json:"text,omitempty"`
 	Keys        []string `json:"keys,omitempty"`
 	PressEnter  bool     `json:"press_enter,omitempty"`
@@ -44,6 +80,7 @@ type SendKeysOptions struct {
 // CaptureOptions configures capturing the terminal screen.
 type CaptureOptions struct {
 	Session     string `json:"session"`
+	Tab         string `json:"tab,omitempty"`
 	Scrollback  int    `json:"scrollback,omitempty"`
 	IncludeANSI bool   `json:"include_ansi,omitempty"`
 }
@@ -51,6 +88,7 @@ type CaptureOptions struct {
 // WaitOptions configures waiting for screen quiescence or a regex match.
 type WaitOptions struct {
 	Session     string `json:"session"`
+	Tab         string `json:"tab,omitempty"`
 	ExpectRegex string `json:"expect_regex,omitempty"`
 	SettleMs    int    `json:"settle_ms,omitempty"`
 	TimeoutMs   int    `json:"timeout_ms,omitempty"`
@@ -61,21 +99,24 @@ type WaitOptions struct {
 
 // PaneCapture holds a snapshot of a tmux pane and its metadata.
 type PaneCapture struct {
-	Session                  string `json:"session"`
-	Cols                     int    `json:"cols"`
-	Rows                     int    `json:"rows"`
-	CursorX                  int    `json:"cursor_x"`
-	CursorY                  int    `json:"cursor_y"`
-	CurrentCommand           string `json:"current_command"`
-	CurrentPath              string `json:"current_path"`
-	Alive                    bool   `json:"alive"`
-	ExitCode                 *int   `json:"exit_code,omitempty"`
-	AttachedClients          int    `json:"attached_clients"`
-	AttachCommand            string `json:"attach_command"`
-	InteractiveAttachCommand string `json:"interactive_attach_command"`
-	Content                  string `json:"content"`
-	TimedOut                 bool   `json:"timed_out,omitempty"`
-	MatchedPattern           bool   `json:"matched_pattern,omitempty"`
+	Session                  string    `json:"session"`
+	TabIndex                 int       `json:"tab_index"`
+	TabName                  string    `json:"tab_name,omitempty"`
+	Tabs                     []TabInfo `json:"tabs,omitempty"`
+	Cols                     int       `json:"cols"`
+	Rows                     int       `json:"rows"`
+	CursorX                  int       `json:"cursor_x"`
+	CursorY                  int       `json:"cursor_y"`
+	CurrentCommand           string    `json:"current_command"`
+	CurrentPath              string    `json:"current_path"`
+	Alive                    bool      `json:"alive"`
+	ExitCode                 *int      `json:"exit_code,omitempty"`
+	AttachedClients          int       `json:"attached_clients"`
+	AttachCommand            string    `json:"attach_command"`
+	InteractiveAttachCommand string    `json:"interactive_attach_command"`
+	Content                  string    `json:"content"`
+	TimedOut                 bool      `json:"timed_out,omitempty"`
+	MatchedPattern           bool      `json:"matched_pattern,omitempty"`
 }
 
 // FormatForLLM formats a PaneCapture into a compact, structured text block suitable for LLM tool responses.
@@ -91,8 +132,28 @@ func (p *PaneCapture) FormatForLLM() string {
 		}
 	}
 
-	fmt.Fprintf(&b, "session: %s | status: %s | size: %dx%d | cursor: (%d,%d) | cmd: %s | attached: %d\n",
-		p.Session, status, p.Cols, p.Rows, p.CursorX, p.CursorY, p.CurrentCommand, p.AttachedClients)
+	tabLabel := fmt.Sprintf("%d", p.TabIndex)
+	if p.TabName != "" {
+		tabLabel = fmt.Sprintf("%d:%s", p.TabIndex, p.TabName)
+	}
+
+	fmt.Fprintf(&b, "session: %s | tab: %s | status: %s | size: %dx%d | cursor: (%d,%d) | cmd: %s | attached: %d\n",
+		p.Session, tabLabel, status, p.Cols, p.Rows, p.CursorX, p.CursorY, p.CurrentCommand, p.AttachedClients)
+	if len(p.Tabs) > 1 {
+		labels := make([]string, 0, len(p.Tabs))
+		for _, t := range p.Tabs {
+			mark := ""
+			if t.Active {
+				mark = "*"
+			}
+			extra := ""
+			if !t.Alive {
+				extra = "(exited)"
+			}
+			labels = append(labels, fmt.Sprintf("%d:%s%s%s", t.Index, t.Name, mark, extra))
+		}
+		fmt.Fprintf(&b, "tabs: %s\n", strings.Join(labels, " | "))
+	}
 	if p.CurrentPath != "" {
 		fmt.Fprintf(&b, "cwd: %s\n", p.CurrentPath)
 	}
@@ -115,6 +176,8 @@ func (p *PaneCapture) FormatForLLM() string {
 // SessionInfo describes an active managed tmux session.
 type SessionInfo struct {
 	Session                  string `json:"session"`
+	TabCount                 int    `json:"tab_count"`
+	ActiveTab                string `json:"active_tab,omitempty"`
 	Cols                     int    `json:"cols"`
 	Rows                     int    `json:"rows"`
 	CurrentCommand           string `json:"current_command"`

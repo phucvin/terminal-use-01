@@ -70,6 +70,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdWait(ctx, client, rest, stdout, stderr)
 	case "resize":
 		return cmdResize(ctx, client, rest, stdout, stderr)
+	case "tab", "tabs":
+		return cmdTab(ctx, client, rest, stdout, stderr)
 	case "list", "ls":
 		return cmdList(ctx, client, rest, stdout, stderr)
 	case "close", "kill", "stop":
@@ -95,14 +97,18 @@ Commands:
   mcp                                   Run the MCP server over stdio (for agy, Claude Code, etc.)
   start   [--name N] [--cwd D] [--cmd C] [--cols 120] [--rows 40] [--env K=V] [--json]
                                         Create a managed tmux session (tu-*)
-  send    <session> [--text T] [--key K]... [--enter] [--expect RE] [--wait-ms N] [--json]
+  send    <session> [--tab T] [--text T] [--key K]... [--enter] [--expect RE] [--wait-ms N] [--json]
                                         Send literal text and/or tmux keys and capture the screen
-  capture <session> [--scrollback N] [--ansi] [--json]
+  capture <session> [--tab T] [--scrollback N] [--ansi] [--json]
                                         Capture current pane screen and metadata
-  wait    <session> [--expect RE] [--settle-ms 350] [--timeout-ms 5000] [--json]
+  wait    <session> [--tab T] [--expect RE] [--settle-ms 350] [--timeout-ms 5000] [--json]
                                         Wait for screen quiescence or regex match
-  resize  <session> --cols N --rows N [--json]
+  resize  <session> [--tab T] --cols N --rows N [--json]
                                         Resize a managed session window
+  tab     new <session> [--name N] [--cwd D] [--cmd C] [--background] [--json]
+          switch <session> <tab> [--json]
+          close <session> [tab] [--json]
+          list <session> [--json]       Manage tabs (tmux windows) inside a session
   list    [--json]                      List active managed (tu-*) sessions
   close   <session> [--json]            Terminate a managed session
   watch   [session] [--interactive]     Attach to a live session (read-only by default; Ctrl-b d to detach)
@@ -200,6 +206,7 @@ func cmdSend(ctx context.Context, client *tmux.Client, args []string, stdout, st
 		asJSON bool
 	)
 	fs.StringVar(&opts.Session, "session", "", "Managed session name")
+	fs.StringVar(&opts.Tab, "tab", "", "Optional target tab index or name (default: active tab)")
 	fs.StringVar(&opts.Text, "text", "", "Literal text to type")
 	fs.Var(&keys, "key", "Tmux key name to send (repeatable, e.g. --key Escape --key Enter)")
 	fs.BoolVar(&opts.PressEnter, "enter", false, "Press Enter after sending text/keys")
@@ -244,6 +251,7 @@ func cmdCapture(ctx context.Context, client *tmux.Client, args []string, stdout,
 		asJSON bool
 	)
 	fs.StringVar(&opts.Session, "session", "", "Managed session name")
+	fs.StringVar(&opts.Tab, "tab", "", "Optional target tab index or name (default: active tab)")
 	fs.IntVar(&opts.Scrollback, "scrollback", 0, "Extra scrollback lines above viewport")
 	fs.BoolVar(&opts.IncludeANSI, "ansi", false, "Preserve ANSI escape codes")
 	fs.BoolVar(&asJSON, "json", false, "Output JSON")
@@ -277,6 +285,7 @@ func cmdWait(ctx context.Context, client *tmux.Client, args []string, stdout, st
 		asJSON bool
 	)
 	fs.StringVar(&opts.Session, "session", "", "Managed session name")
+	fs.StringVar(&opts.Tab, "tab", "", "Optional target tab index or name (default: active tab)")
 	fs.StringVar(&opts.ExpectRegex, "expect", "", "Regex pattern to wait for")
 	fs.IntVar(&opts.SettleMs, "settle-ms", tmux.DefaultSettleMs, "Quiescence settle time (ms)")
 	fs.IntVar(&opts.TimeoutMs, "timeout-ms", tmux.DefaultTimeoutMs, "Wait timeout (ms)")
@@ -310,11 +319,13 @@ func cmdResize(ctx context.Context, client *tmux.Client, args []string, stdout, 
 
 	var (
 		session string
+		tab     string
 		cols    int
 		rows    int
 		asJSON  bool
 	)
 	fs.StringVar(&session, "session", "", "Managed session name")
+	fs.StringVar(&tab, "tab", "", "Optional target tab index or name (default: active tab)")
 	fs.IntVar(&cols, "cols", 0, "New width in columns")
 	fs.IntVar(&rows, "rows", 0, "New height in rows")
 	fs.BoolVar(&asJSON, "json", false, "Output JSON")
@@ -331,12 +342,239 @@ func cmdResize(ctx context.Context, client *tmux.Client, args []string, stdout, 
 		return 2
 	}
 
-	cap, err := client.Resize(ctx, session, cols, rows)
+	cap, err := client.ResizeTab(ctx, session, tab, cols, rows)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return writeCapture(stdout, cap, asJSON)
+}
+
+func cmdTab(ctx context.Context, client *tmux.Client, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Fprint(stderr, `Usage:
+  terminal-use tab new    <session> [--name N] [--cwd D] [--cmd C] [--cols N] [--rows N] [--env K=V] [--background] [--json]
+  terminal-use tab switch <session> <tab> [--json]
+  terminal-use tab close  <session> [tab] [--json]
+  terminal-use tab list   <session> [--json]
+`)
+		return 0
+	}
+
+	sub := args[0]
+	rest := args[1:]
+
+	switch sub {
+	case "new", "create", "add":
+		return cmdTabNew(ctx, client, rest, stdout, stderr)
+	case "switch", "select", "focus":
+		return cmdTabSwitch(ctx, client, rest, stdout, stderr)
+	case "close", "kill", "rm":
+		return cmdTabClose(ctx, client, rest, stdout, stderr)
+	case "list", "ls":
+		return cmdTabList(ctx, client, rest, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown tab action %q (expected: new, switch, close, list)\n", sub)
+		return 2
+	}
+}
+
+func cmdTabNew(ctx context.Context, client *tmux.Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tab new", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	var (
+		opts    tmux.NewTabOptions
+		envVars stringSliceFlag
+		asJSON  bool
+	)
+	fs.StringVar(&opts.Session, "session", "", "Managed session name")
+	fs.StringVar(&opts.Name, "name", "", "Optional tab name")
+	fs.StringVar(&opts.Cwd, "cwd", "", "Working directory")
+	fs.StringVar(&opts.Command, "cmd", "", "Initial command to execute")
+	fs.IntVar(&opts.Cols, "cols", 0, "Pane columns (default: active tab width)")
+	fs.IntVar(&opts.Rows, "rows", 0, "Pane rows (default: active tab height)")
+	fs.IntVar(&opts.SettleMs, "settle-ms", 250, "Initial settle duration (ms)")
+	fs.IntVar(&opts.TimeoutMs, "timeout-ms", 2000, "Initial wait timeout (ms)")
+	fs.BoolVar(&opts.Background, "background", false, "Create tab without switching focus")
+	fs.BoolVar(&opts.Background, "d", false, "Shorthand for --background")
+	fs.Var(&envVars, "env", "Environment variable KEY=VALUE (repeatable)")
+	fs.BoolVar(&asJSON, "json", false, "Output JSON")
+
+	reordered := reorderFlags(args, map[string]bool{"background": true, "d": true, "json": true})
+	if err := fs.Parse(reordered); err != nil {
+		return 2
+	}
+	if opts.Session == "" && fs.NArg() > 0 {
+		opts.Session = fs.Arg(0)
+	}
+	if opts.Session == "" {
+		fmt.Fprintln(stderr, "error: session name is required")
+		return 2
+	}
+	if len(envVars) > 0 {
+		opts.Env = make(map[string]string, len(envVars))
+		for _, kv := range envVars {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok || k == "" {
+				fmt.Fprintf(stderr, "invalid --env %q: expected KEY=VALUE\n", kv)
+				return 2
+			}
+			opts.Env[k] = v
+		}
+	}
+
+	cap, err := client.NewTab(ctx, opts)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return writeCapture(stdout, cap, asJSON)
+}
+
+func cmdTabSwitch(ctx context.Context, client *tmux.Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tab switch", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	var (
+		session string
+		tab     string
+		asJSON  bool
+	)
+	fs.StringVar(&session, "session", "", "Managed session name")
+	fs.StringVar(&tab, "tab", "", "Target tab index, name, or next/prev/last")
+	fs.BoolVar(&asJSON, "json", false, "Output JSON")
+
+	reordered := reorderFlags(args, map[string]bool{"json": true})
+	if err := fs.Parse(reordered); err != nil {
+		return 2
+	}
+	argIdx := 0
+	if session == "" && fs.NArg() > argIdx {
+		session = fs.Arg(argIdx)
+		argIdx++
+	}
+	if tab == "" && fs.NArg() > argIdx {
+		tab = fs.Arg(argIdx)
+	}
+	if session == "" || tab == "" {
+		fmt.Fprintln(stderr, "error: session and tab (index, name, or next/prev/last) are required")
+		return 2
+	}
+
+	cap, err := client.SwitchTab(ctx, session, tab)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return writeCapture(stdout, cap, asJSON)
+}
+
+func cmdTabClose(ctx context.Context, client *tmux.Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tab close", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	var (
+		session string
+		tab     string
+		asJSON  bool
+	)
+	fs.StringVar(&session, "session", "", "Managed session name")
+	fs.StringVar(&tab, "tab", "", "Tab index or name to close (default: active tab)")
+	fs.BoolVar(&asJSON, "json", false, "Output JSON")
+
+	reordered := reorderFlags(args, map[string]bool{"json": true})
+	if err := fs.Parse(reordered); err != nil {
+		return 2
+	}
+	argIdx := 0
+	if session == "" && fs.NArg() > argIdx {
+		session = fs.Arg(argIdx)
+		argIdx++
+	}
+	if tab == "" && fs.NArg() > argIdx {
+		tab = fs.Arg(argIdx)
+	}
+	if session == "" {
+		fmt.Fprintln(stderr, "error: session name is required")
+		return 2
+	}
+
+	res, err := client.CloseTab(ctx, session, tab)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(res)
+		return 0
+	}
+	msg := fmt.Sprintf("Closed tab %d:%s in %s.", res.ClosedTab.Index, res.ClosedTab.Name, res.Session)
+	if res.SessionClosed {
+		fmt.Fprintln(stdout, msg+" Session ended (last tab closed).")
+		return 0
+	}
+	fmt.Fprintln(stdout, msg)
+	if res.Capture != nil {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, res.Capture.FormatForLLM())
+	}
+	return 0
+}
+
+func cmdTabList(ctx context.Context, client *tmux.Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tab list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	var (
+		session string
+		asJSON  bool
+	)
+	fs.StringVar(&session, "session", "", "Managed session name")
+	fs.BoolVar(&asJSON, "json", false, "Output JSON")
+
+	reordered := reorderFlags(args, map[string]bool{"json": true})
+	if err := fs.Parse(reordered); err != nil {
+		return 2
+	}
+	if session == "" && fs.NArg() > 0 {
+		session = fs.Arg(0)
+	}
+	if session == "" {
+		fmt.Fprintln(stderr, "error: session name is required")
+		return 2
+	}
+
+	tabs, err := client.ListTabs(ctx, session)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(tabs)
+		return 0
+	}
+	for _, t := range tabs {
+		mark := " "
+		if t.Active {
+			mark = "*"
+		}
+		status := "alive"
+		if !t.Alive {
+			if t.ExitCode != nil {
+				status = fmt.Sprintf("exited(%d)", *t.ExitCode)
+			} else {
+				status = "exited"
+			}
+		}
+		fmt.Fprintf(stdout, "%s %-3d %-16s %-10s %dx%-4d cmd=%-12s %s\n",
+			mark, t.Index, t.Name, status, t.Cols, t.Rows, t.CurrentCommand, t.CurrentPath)
+	}
+	return 0
 }
 
 func cmdList(ctx context.Context, client *tmux.Client, args []string, stdout, stderr io.Writer) int {
@@ -375,8 +613,12 @@ func cmdList(ctx context.Context, client *tmux.Client, args []string, stdout, st
 				status = "exited"
 			}
 		}
-		fmt.Fprintf(stdout, "%-24s %-10s %dx%-4d cmd=%-12s attached=%d  (%s)\n",
-			s.Session, status, s.Cols, s.Rows, s.CurrentCommand, s.AttachedClients, s.AttachCommand)
+		tabCol := ""
+		if s.TabCount > 1 {
+			tabCol = fmt.Sprintf("tabs=%-2d ", s.TabCount)
+		}
+		fmt.Fprintf(stdout, "%-24s %-10s %dx%-4d %scmd=%-12s attached=%d  (%s)\n",
+			s.Session, status, s.Cols, s.Rows, tabCol, s.CurrentCommand, s.AttachedClients, s.AttachCommand)
 	}
 	return 0
 }

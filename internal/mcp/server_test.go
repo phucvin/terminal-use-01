@@ -95,8 +95,8 @@ func TestMCPServerEndToEnd(t *testing.T) {
 	send(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
 	listResp := recv()
 	tools := listResp["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 11 {
+		t.Fatalf("expected 11 tools, got %d", len(tools))
 	}
 
 	callTool := func(id int, name string, args map[string]any) (string, bool) {
@@ -158,7 +158,43 @@ func TestMCPServerEndToEnd(t *testing.T) {
 		t.Fatalf("terminal_list failed: isErr=%v text=%s", isErr, text)
 	}
 
-	text, isErr = callTool(9, "terminal_close", map[string]any{"session": "tu-mcpdemo"})
+	// 5. Tabs: new -> send -> list_tabs -> switch -> close_tab.
+	text, isErr = callTool(9, "terminal_new_tab", map[string]any{
+		"session": "mcpdemo",
+		"name":    "worker",
+		"command": "sh",
+	})
+	if isErr || !strings.Contains(text, "tab: 1:worker") {
+		t.Fatalf("terminal_new_tab failed: isErr=%v text=%s", isErr, text)
+	}
+
+	text, isErr = callTool(10, "terminal_send_keys", map[string]any{
+		"session":      "mcpdemo",
+		"text":         "echo WORKER_TAB_OK",
+		"press_enter":  true,
+		"expect_regex": "WORKER_TAB_OK",
+		"timeout_ms":   4000,
+	})
+	if isErr || !strings.Contains(text, "WORKER_TAB_OK") {
+		t.Fatalf("terminal_send_keys in worker tab failed: isErr=%v text=%s", isErr, text)
+	}
+
+	text, isErr = callTool(11, "terminal_list_tabs", map[string]any{"session": "mcpdemo"})
+	if isErr || !strings.Contains(text, "1:worker") || !strings.Contains(text, "Tabs in tu-mcpdemo (2)") {
+		t.Fatalf("terminal_list_tabs failed: isErr=%v text=%s", isErr, text)
+	}
+
+	text, isErr = callTool(12, "terminal_switch_tab", map[string]any{"session": "mcpdemo", "tab": "0"})
+	if isErr || !strings.Contains(text, "MCP_WORKS_123") {
+		t.Fatalf("terminal_switch_tab(0) failed: isErr=%v text=%s", isErr, text)
+	}
+
+	text, isErr = callTool(13, "terminal_close_tab", map[string]any{"session": "mcpdemo", "tab": "worker"})
+	if isErr || !strings.Contains(text, "Closed tab 1:worker in tu-mcpdemo") {
+		t.Fatalf("terminal_close_tab failed: isErr=%v text=%s", isErr, text)
+	}
+
+	text, isErr = callTool(14, "terminal_close", map[string]any{"session": "tu-mcpdemo"})
 	if isErr || !strings.Contains(text, "Closed session tu-mcpdemo") {
 		t.Fatalf("terminal_close failed: isErr=%v text=%s", isErr, text)
 	}

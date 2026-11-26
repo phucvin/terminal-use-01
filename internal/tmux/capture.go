@@ -12,14 +12,22 @@ import (
 // ansiEscapeRe matches standard ANSI CSI, OSC, and 2-byte escape sequences.
 var ansiEscapeRe = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])`)
 
-// Capture reads the current pane content and metadata from a managed tmux session.
+// Capture reads the current pane content and metadata from a managed tmux session (active tab or opts.Tab).
 func (c *Client) Capture(ctx context.Context, opts CaptureOptions) (*PaneCapture, error) {
 	session, err := NormalizeSessionName(opts.Session)
 	if err != nil {
 		return nil, err
 	}
-	sessTarget := "=" + session
-	paneTarget := "=" + session + ":"
+
+	tabs, err := c.ListTabs(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	targetTab, err := resolveTabFromList(tabs, opts.Tab, false)
+	if err != nil {
+		return nil, err
+	}
+	paneTarget := fmt.Sprintf("=%s:%d", session, targetTab.Index)
 
 	metaFmt := strings.Join([]string{
 		"#{pane_active}",
@@ -34,7 +42,7 @@ func (c *Client) Capture(ctx context.Context, opts CaptureOptions) (*PaneCapture
 		"#{pane_current_path}",
 	}, fieldSep)
 
-	metaOut, err := c.Run(ctx, "list-panes", "-t", sessTarget, "-F", metaFmt)
+	metaOut, err := c.Run(ctx, "list-panes", "-t", paneTarget, "-F", metaFmt)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +97,9 @@ func (c *Client) Capture(ctx context.Context, opts CaptureOptions) (*PaneCapture
 
 	return &PaneCapture{
 		Session:                  session,
+		TabIndex:                 targetTab.Index,
+		TabName:                  targetTab.Name,
+		Tabs:                     tabs,
 		Cols:                     cols,
 		Rows:                     rows,
 		CursorX:                  cursorX,
@@ -135,6 +146,7 @@ func (c *Client) Wait(ctx context.Context, opts WaitOptions) (*PaneCapture, erro
 
 	capOpts := CaptureOptions{
 		Session:     session,
+		Tab:         opts.Tab,
 		Scrollback:  opts.Scrollback,
 		IncludeANSI: opts.IncludeANSI,
 	}

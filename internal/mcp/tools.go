@@ -77,6 +77,10 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 					"type":        "string",
 					"description": "Managed session name (with or without 'tu-' prefix).",
 				},
+				"tab": map[string]any{
+					"type":        "string",
+					"description": "Optional target tab index or name (defaults to the active tab).",
+				},
 				"text": map[string]any{
 					"type":        "string",
 					"description": "Literal text to type into the terminal (sent safely with -l or paste-buffer; never interpreted as key names).",
@@ -145,6 +149,10 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 					"type":        "string",
 					"description": "Managed session name (with or without 'tu-' prefix).",
 				},
+				"tab": map[string]any{
+					"type":        "string",
+					"description": "Optional target tab index or name (defaults to the active tab).",
+				},
 				"scrollback": map[string]any{
 					"type":        "integer",
 					"description": "Number of scrollback lines above the visible viewport to include (default 0).",
@@ -177,6 +185,10 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 				"session": map[string]any{
 					"type":        "string",
 					"description": "Managed session name (with or without 'tu-' prefix).",
+				},
+				"tab": map[string]any{
+					"type":        "string",
+					"description": "Optional target tab index or name (defaults to the active tab).",
 				},
 				"expect_regex": map[string]any{
 					"type":        "string",
@@ -223,6 +235,10 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 					"type":        "string",
 					"description": "Managed session name.",
 				},
+				"tab": map[string]any{
+					"type":        "string",
+					"description": "Optional target tab index or name (defaults to the active tab).",
+				},
 				"cols": map[string]any{
 					"type":        "integer",
 					"description": "New width in columns (20-500).",
@@ -236,13 +252,14 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 	}, func(ctx context.Context, raw json.RawMessage) ToolResult {
 		var params struct {
 			Session string `json:"session"`
+			Tab     string `json:"tab,omitempty"`
 			Cols    int    `json:"cols"`
 			Rows    int    `json:"rows"`
 		}
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return errorResult(fmt.Errorf("invalid arguments: %w", err))
 		}
-		cap, err := client.Resize(ctx, params.Session, params.Cols, params.Rows)
+		cap, err := client.ResizeTab(ctx, params.Session, params.Tab, params.Cols, params.Rows)
 		if err != nil {
 			return errorResult(err)
 		}
@@ -250,8 +267,188 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 	})
 
 	s.RegisterTool(ToolDefinition{
+		Name: "terminal_new_tab",
+		Description: "Create a new tab (tmux window) inside an existing managed terminal session. " +
+			"Switches to the new tab by default (unless background=true) and returns its initial screen capture.",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"session"},
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Managed session name (with or without 'tu-' prefix).",
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Optional tab name (alphanumeric, '-', '_').",
+				},
+				"cwd": map[string]any{
+					"type":        "string",
+					"description": "Optional working directory for the new tab.",
+				},
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Optional initial command to run in the new tab (defaults to interactive shell).",
+				},
+				"cols": map[string]any{
+					"type":        "integer",
+					"description": "Optional pane width in columns (20-500; defaults to session's active tab width).",
+				},
+				"rows": map[string]any{
+					"type":        "integer",
+					"description": "Optional pane height in rows (5-200; defaults to session's active tab height).",
+				},
+				"env": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+					"description":          "Optional environment variables to inject into the new tab.",
+				},
+				"background": map[string]any{
+					"type":        "boolean",
+					"description": "If true, create the tab in the background without switching active focus to it (default false).",
+				},
+				"settle_ms": map[string]any{
+					"type":        "integer",
+					"description": "Initial settle time in milliseconds before capturing (default 250).",
+				},
+				"timeout_ms": map[string]any{
+					"type":        "integer",
+					"description": "Maximum initial wait time in milliseconds (default 2000).",
+				},
+			},
+		},
+	}, func(ctx context.Context, raw json.RawMessage) ToolResult {
+		var opts tmux.NewTabOptions
+		if err := json.Unmarshal(raw, &opts); err != nil {
+			return errorResult(fmt.Errorf("invalid arguments: %w", err))
+		}
+		cap, err := client.NewTab(ctx, opts)
+		if err != nil {
+			return errorResult(err)
+		}
+		return textResult(cap.FormatForLLM())
+	})
+
+	s.RegisterTool(ToolDefinition{
+		Name:        "terminal_switch_tab",
+		Description: "Switch the active tab (tmux window) inside a managed terminal session by index, name, or 'next'/'prev'/'last', and return the newly active tab's screen.",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"session", "tab"},
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Managed session name (with or without 'tu-' prefix).",
+				},
+				"tab": map[string]any{
+					"type":        "string",
+					"description": "Target tab index (e.g. '0', '1'), tab name (e.g. 'server'), or 'next', 'prev', 'last'.",
+				},
+			},
+		},
+	}, func(ctx context.Context, raw json.RawMessage) ToolResult {
+		var params struct {
+			Session string `json:"session"`
+			Tab     string `json:"tab"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return errorResult(fmt.Errorf("invalid arguments: %w", err))
+		}
+		cap, err := client.SwitchTab(ctx, params.Session, params.Tab)
+		if err != nil {
+			return errorResult(err)
+		}
+		return textResult(cap.FormatForLLM())
+	})
+
+	s.RegisterTool(ToolDefinition{
+		Name:        "terminal_close_tab",
+		Description: "Close a tab (tmux window) inside a managed terminal session by index or name (defaults to the active tab). Closing the last tab also terminates the session.",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"session"},
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Managed session name (with or without 'tu-' prefix).",
+				},
+				"tab": map[string]any{
+					"type":        "string",
+					"description": "Optional tab index or name to close (defaults to the currently active tab).",
+				},
+			},
+		},
+	}, func(ctx context.Context, raw json.RawMessage) ToolResult {
+		var params struct {
+			Session string `json:"session"`
+			Tab     string `json:"tab,omitempty"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return errorResult(fmt.Errorf("invalid arguments: %w", err))
+		}
+		res, err := client.CloseTab(ctx, params.Session, params.Tab)
+		if err != nil {
+			return errorResult(err)
+		}
+		msg := fmt.Sprintf("Closed tab %d:%s in %s.", res.ClosedTab.Index, res.ClosedTab.Name, res.Session)
+		if res.SessionClosed {
+			return textResult(msg + " Session ended (last tab closed).")
+		}
+		if res.Capture != nil {
+			return textResult(msg + "\n\n" + res.Capture.FormatForLLM())
+		}
+		return textResult(msg)
+	})
+
+	s.RegisterTool(ToolDefinition{
+		Name:        "terminal_list_tabs",
+		Description: "List all tabs (tmux windows) inside a managed terminal session with their index, name, active state, status, dimensions, and foreground command.",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"session"},
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Managed session name (with or without 'tu-' prefix).",
+				},
+			},
+		},
+	}, func(ctx context.Context, raw json.RawMessage) ToolResult {
+		var params struct {
+			Session string `json:"session"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return errorResult(fmt.Errorf("invalid arguments: %w", err))
+		}
+		tabs, err := client.ListTabs(ctx, params.Session)
+		if err != nil {
+			return errorResult(err)
+		}
+		norm, _ := tmux.NormalizeSessionName(params.Session)
+		var b strings.Builder
+		fmt.Fprintf(&b, "Tabs in %s (%d):\n", norm, len(tabs))
+		for _, t := range tabs {
+			mark := " "
+			if t.Active {
+				mark = "*"
+			}
+			status := "alive"
+			if !t.Alive {
+				if t.ExitCode != nil {
+					status = fmt.Sprintf("exited(%d)", *t.ExitCode)
+				} else {
+					status = "exited"
+				}
+			}
+			fmt.Fprintf(&b, "%s %d:%s | %s | %dx%d | cmd=%s | cwd=%s\n",
+				mark, t.Index, t.Name, status, t.Cols, t.Rows, t.CurrentCommand, t.CurrentPath)
+		}
+		return textResult(strings.TrimRight(b.String(), "\n"))
+	})
+
+	s.RegisterTool(ToolDefinition{
 		Name:        "terminal_list",
-		Description: "List all active managed ('tu-*') tmux sessions with their foreground command, dimensions, status, and attach commands.",
+		Description: "List all active managed ('tu-*') tmux sessions with their foreground command, tab count, dimensions, status, and attach commands.",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
@@ -274,8 +471,12 @@ func RegisterTerminalTools(s *Server, client *tmux.Client) {
 					status = "exited"
 				}
 			}
-			fmt.Fprintf(&b, "- %s | %s | %dx%d | cmd=%s | attached=%d | watch: %s\n",
-				s.Session, status, s.Cols, s.Rows, s.CurrentCommand, s.AttachedClients, s.AttachCommand)
+			tabInfo := ""
+			if s.TabCount > 1 {
+				tabInfo = fmt.Sprintf(" | tabs=%d (%s)", s.TabCount, s.ActiveTab)
+			}
+			fmt.Fprintf(&b, "- %s | %s | %dx%d%s | cmd=%s | attached=%d | watch: %s\n",
+				s.Session, status, s.Cols, s.Rows, tabInfo, s.CurrentCommand, s.AttachedClients, s.AttachCommand)
 		}
 		return textResult(strings.TrimRight(b.String(), "\n"))
 	})
