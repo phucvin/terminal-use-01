@@ -1,0 +1,5 @@
+{
+  "name": "terminal-use",
+  "version": "0.1.0",
+  "description": "Computer-use-style interactive terminal control via tmux send-keys and capture-pane, with live human monitoring."
+}

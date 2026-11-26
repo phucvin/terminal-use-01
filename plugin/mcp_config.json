@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "terminal-use": {
+      "command": "/home/user/terminal-use-01/bin/terminal-use",
+      "args": ["mcp"]
+    }
+  }
+}
